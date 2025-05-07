@@ -1,4 +1,6 @@
 import time
+import numpy as np
+import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -161,25 +163,138 @@ class PropertyScraper:
         time.sleep(5)
     
     
+    def _extract_data(self, row, by, value):
+        try:
+            return row.find_element(by, value).text
+        except:
+            return np.nan
+    
+    
+    def scrape_data(self):
+        # Scraping Data from the Last Page
+
+        rows = self.driver.find_elements(By.CLASS_NAME, "tupleNew__TupleContent")
+        for row in rows:
+            
+            property = {
+                "name" : self._extract_data(row, By.CLASS_NAME, "tupleNew__headingNrera"),
+                "location" : self._extract_data(row, By.CLASS_NAME, "tupleNew__propType"),
+                "price" : self._extract_data(row, By.CLASS_NAME, "tupleNew__priceValWrap")
+            }
+            
+            # Property Area and BHK
+            try:
+                elements = row.find_elements(By.CLASS_NAME, "tupleNew__area1Type")
+            except:
+                property["area"], property["bhk"] = [np.nan, np.nan]
+            else:
+                property["area"], property["bhk"] = [ele.text for ele in elements]
+            
+            
+            self.data.append(property)
+    
+    
+    def navigate_pages_and_scrape_data(self):
+        
+        page_count = 0
+        while True:
+            page_count += 1
+            try:
+                time.sleep(6)
+                self.scrape_data()                
+                next_page_button = self.driver.find_element(By.XPATH, "//a[normalize-space()='Next Page >']")
+            except:
+                print(f"Timeout because we have scraped {page_count} pages.\n")
+                break
+            else:
+                try:
+                    self.driver.execute_script("window.scrollBy(0, arguments[0].getBoundingClientRect().top - 100);", next_page_button)
+                    time.sleep(6)
+
+                    self.wait.until(
+                        EC.element_to_be_clickable((By.XPATH, "//a[normalize-space()='Next Page >']"))
+                    ).click()
+                    time.sleep(6)
+                
+                except:
+                    print("Timeout while clicking on \"Next Page\".\n")
+    
+    
+    def data_cleaning_and_exporting(self, file_name):
+        df = (
+            pd
+            .DataFrame(self.data)
+            .drop_duplicates()
+            .apply(lambda col: col.str.strip().str.lower() if col.dtype == 'object' else col)
+            .assign(
+                is_reviewed = lambda df_ : (
+                        df_
+                        .name
+                        .str.contains("\n")
+                        .astype(int)
+                    ),
+                name = lambda df_: (
+                        df_
+                        .name
+                        .str.replace("\n[0-9.]+", "", regex=True)
+                        .str.strip()
+                    ),
+                location = lambda df_: (
+                        df_
+                        .location
+                        .str.replace("Kolkata", "") 
+                        # ^ We have to change this value according to cleaning.
+                        .str.strip()
+                        .str.replace(",$", "", regex=True)
+                        .str.split("in")
+                        .str[-1]
+                        .str.strip()
+                    ),
+                price = lambda df_: (
+                        df_
+                        .price
+                        .str.replace("₹", "")
+                        .apply(
+                            lambda val: float(val.replace('lac', '').strip()) if 'lac' in val else float(val.replace("cr","").strip()) * 100 
+                        )
+                    ),
+                area = lambda df_: (
+                        df_
+                        .area
+                        .str.replace("sqft", "")
+                        .str.strip()
+                        .str.replace(",", "")
+                        .str.strip()
+                        .astype(int)
+                    ),
+                bhk = lambda df_: (
+                        df_
+                        .bhk
+                        .str.replace("bhk", "")
+                        .str.strip()
+                        .astype(int)
+                    ),
+            
+            )
+            .rename(columns={
+                'price': 'price_lacs',
+                'area': 'area_sqft'
+            })
+            .reset_index(drop=True)
+        )
+        
+        df.to_csv(f"{file_name}.csv", index=False)
     
     
     
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    def run(self, text = "Kolkata", offset = -100):
+    def run(self, text = "Kolkata", offset = -100,  file_name = "Properties"):
         try:
             self.access_website()
             self.search_properties(text)
             self.adjust_budget_slider(offset)
             self.apply_filters()
+            self.navigate_pages_and_scrape_data()
+            self.data_cleaning_and_exporting(file_name)
         finally:
             time.sleep(5)
             self.driver.quit()
@@ -191,5 +306,5 @@ if __name__ == "__main__":
     scraper.run(
         text = "kolkata",
         offset= -73,
-        
+        file_name= "kolkata-properties-cleaned"
     )
